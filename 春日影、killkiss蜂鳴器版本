@@ -1,0 +1,401 @@
+/*
+參考Haruhikage_Buzzer 所使用的"春日影"旋律
+原版https://www.youtube.com/watch?v=ZsvJUh03MwI&list=RDZsvJUh03MwI&start_radio=1
+參考此旋律製作killkisshttps://www.youtube.com/watch?v=Y_AVSSLEJEw&list=RDY_AVSSLEJEw&start_radio=1
+原版https://www.youtube.com/watch?v=RexyoaXaQ1o&list=RDRexyoaXaQ1o&start_radio=1
+請多加欣賞原版
+*/
+/*
+  Emotion Doll: Two Melodies + Interactive RGB
+
+  Sound sensor D2 -> BMP180 melody
+  Button D4       -> BMP=100 melody
+  Passive buzzer  -> D9
+  RGB LED         -> D6, D7, D8 (LOW = ON)
+
+  Serial Monitor: 9600 baud
+*/
+
+#include <Arduino.h>
+
+const int RED_PIN = 6;
+const int GREEN_PIN = 7;
+const int BLUE_PIN = 8;
+const int BUTTON_PIN = 4;
+const int SOUND_PIN = 2;
+const int BUZZER_PIN = 9;
+
+const int SOUND_ACTIVE_LEVEL = LOW;
+
+const unsigned long LONELY_TIMEOUT = 10000;
+const unsigned long SOUND_COOLDOWN = 1500;
+const unsigned long DEBOUNCE_TIME = 40;
+const unsigned long STARTUP_TIME = 1000;
+const unsigned long COLOR_INTERVAL = 500;
+
+// ==================================================
+// MELODY 1: BMP180
+// Triggered by the sound sensor.
+// Durations are denominators: 8 means 1000 / 8 ms.
+// ==================================================
+
+const uint16_t melody1[] = {
+  659,494,659,784,659,740,784,880,
+  1047,988,659,784,740,784,880,740,
+  784,659,740,784,880,988,1175,740,
+  659,494,659,740,784,880,740,880,
+  1175,82,82,165,0,165,0,165,
+  147,0,165,0,165,175,165,494,
+  587,0,988,880,784,740,740,740,
+  659,740,659,784,0,587,659,659,
+  784,740,784,740,659,740,587,880,
+  0,659,988,880,988,1047,0,1047,
+  988,988,880,784,740,784,659,0,
+  988,0,988,988,988,880
+};
+
+const uint8_t duration1[] = {
+  8,8,8,3,4,4,4,4,4,3,3,5,
+  4,4,4,4,2,8,8,8,8,2,4,4,
+  3,8,8,8,8,8,3,8,3,8,8,8,
+  12,8,12,10,8,12,8,12,8,8,8,6,
+  8,64,8,4,4,4,14,8,8,8,8,4,
+  32,8,8,4,4,4,8,8,8,8,8,4,
+  8,8,4,8,4,4,32,8,8,8,8,8,
+  8,4,4,12,4,24,6,24,8,2
+};
+
+const int COUNT1 = sizeof(melody1) / sizeof(melody1[0]);
+
+// ==================================================
+// MELODY 2: BMP=100
+// Triggered by the button.
+// Durations are milliseconds.
+// REST = 0 Hz.
+// ==================================================
+
+const uint16_t melody2[] = {
+  1318,1175,1046,1175,1318,1397,1318,1175,
+  1318,1175,1046,1175,1318,1397,1318,1175,
+
+  1318,1175,1046,1175,1318,1397,1318,1175,
+  1318,1175,1046,1175,1318,1397,1318,1175,
+
+  523,578,659,659,578,698,659,578,
+  578,578,523,523,698,659,578,578,
+
+  523,578,659,0,659,784,1046,988,
+  1046,988,1046,988,880,784,784,578,
+
+  698,698,659,659,392,698,659,578,
+  659,784,523,0,523,578,523,523,
+
+  784,523,698,659,578,523,523
+};
+
+const uint16_t duration2[] = {
+  618,309,618,309,309,154,309,618,
+  618,309,618,309,309,154,309,618,
+
+  618,309,618,309,309,154,309,618,
+  618,309,618,309,309,154,309,618,
+
+  154,154,309,309,309,309,309,309,
+  309,309,154,154,309,309,309,618,
+
+  154,154,618,618,309,309,309,618,
+  309,618,309,154,154,618,309,309,
+
+  309,618,309,618,309,309,309,309,
+  618,309,618,618,309,309,154,309,
+
+  309,309,618,309,618,309,618
+};
+
+const int COUNT2 = sizeof(melody2) / sizeof(melody2[0]);
+
+// ==================================================
+// STATES
+// ==================================================
+
+enum Mood {
+  NORMAL,
+  SOUND_HAPPY,
+  BUTTON_HAPPY,
+  LONELY
+};
+
+enum MelodyType {
+  NO_MELODY,
+  MELODY_SOUND,
+  MELODY_BUTTON
+};
+
+Mood mood = NORMAL;
+MelodyType activeMelody = NO_MELODY;
+
+unsigned long startupTime;
+unsigned long lastInteractionTime;
+unsigned long lastSoundTime = 0;
+unsigned long lastDebounceTime = 0;
+unsigned long lastColorChangeTime = 0;
+
+int lastButtonReading = HIGH;
+int stableButtonState = HIGH;
+int lonelyColorIndex = 0;
+
+bool soundArmed = false;
+bool stepActive = false;
+bool noteEnded = false;
+
+int noteIndex = 0;
+unsigned long noteStartTime = 0;
+unsigned long noteDuration = 0;
+unsigned long noteGap = 0;
+
+// ==================================================
+// SETUP
+// ==================================================
+
+void setup() {
+  pinMode(RED_PIN, OUTPUT);
+  pinMode(GREEN_PIN, OUTPUT);
+  pinMode(BLUE_PIN, OUTPUT);
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(SOUND_PIN, INPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  Serial.begin(9600);
+
+  startupTime = millis();
+  lastInteractionTime = startupTime;
+
+  setRGB(true, true, false);
+
+  Serial.println("Emotion Doll Ready");
+  Serial.print("BMP180 notes: ");
+  Serial.println(COUNT1);
+  Serial.print("BMP=100 notes: ");
+  Serial.println(COUNT2);
+  Serial.println("Waiting for sound or button.");
+}
+
+// ==================================================
+// MAIN LOOP
+// ==================================================
+
+void loop() {
+  unsigned long now = millis();
+
+  readButton(now);
+  readSound(now);
+  updateMelody(now);
+  updateMood(now);
+  updateRGB(now);
+}
+
+// ==================================================
+// BUTTON: PLAY MELODY 2
+// Button has priority and interrupts current playback.
+// ==================================================
+
+void readButton(unsigned long now) {
+  int reading = digitalRead(BUTTON_PIN);
+
+  if (reading != lastButtonReading) {
+    lastDebounceTime = now;
+  }
+
+  if (now - lastDebounceTime >= DEBOUNCE_TIME) {
+    if (reading != stableButtonState) {
+      stableButtonState = reading;
+
+      if (stableButtonState == LOW) {
+        Serial.println("[BUTTON] 一生、バンドしてくれる？");
+        Serial.println("[MELODY] BMP=100");
+        startMelody(MELODY_BUTTON, now);
+      }
+    }
+  }
+
+  lastButtonReading = reading;
+}
+
+// ==================================================
+// SOUND SENSOR: PLAY MELODY 1
+// ==================================================
+
+void readSound(unsigned long now) {
+  int soundState = digitalRead(SOUND_PIN);
+
+  if (now - startupTime < STARTUP_TIME) {
+    return;
+  }
+
+  // Ignore the sensor during either melody.
+  if (activeMelody != NO_MELODY) {
+    return;
+  }
+
+  // Rearm only when the sensor returns to inactive.
+  if (soundState != SOUND_ACTIVE_LEVEL) {
+    soundArmed = true;
+    return;
+  }
+
+  if (soundArmed &&
+      now - lastSoundTime >= SOUND_COOLDOWN) {
+
+    soundArmed = false;
+    lastSoundTime = now;
+
+    Serial.println("[SOUND] Sound detected!");
+    Serial.println("[MELODY] BMP180");
+    startMelody(MELODY_SOUND, now);
+  }
+}
+
+// ==================================================
+// START MELODY
+// ==================================================
+
+void startMelody(MelodyType type, unsigned long now) {
+  activeMelody = type;
+  noteIndex = 0;
+  stepActive = false;
+  noteEnded = false;
+
+  noTone(BUZZER_PIN);
+
+  lastInteractionTime = now;
+
+  if (type == MELODY_BUTTON) {
+    mood = BUTTON_HAPPY;
+  } else {
+    mood = SOUND_HAPPY;
+  }
+}
+
+// ==================================================
+// MELODY PLAYER
+// Non-blocking: no delay().
+// ==================================================
+
+void updateMelody(unsigned long now) {
+  if (activeMelody == NO_MELODY) {
+    return;
+  }
+
+  int count = (activeMelody == MELODY_SOUND)
+              ? COUNT1 : COUNT2;
+
+  if (noteIndex >= count) {
+    noTone(BUZZER_PIN);
+    activeMelody = NO_MELODY;
+    stepActive = false;
+
+    Serial.println("[MELODY] Playback finished.");
+    return;
+  }
+
+  if (!stepActive) {
+    uint16_t frequency;
+    
+    if (activeMelody == MELODY_SOUND) {
+      frequency = melody1[noteIndex];
+      noteDuration = 1000UL / duration1[noteIndex];
+    } else {
+      frequency = melody2[noteIndex];
+      noteDuration = duration2[noteIndex];
+    }
+
+    // Short separation between notes.
+    noteGap = 20;
+
+    noteStartTime = now;
+    stepActive = true;
+    noteEnded = false;
+
+    if (frequency == 0) {
+      noTone(BUZZER_PIN);
+    } else {
+      tone(BUZZER_PIN, frequency);
+    }
+
+    return;
+  }
+
+  unsigned long elapsed = now - noteStartTime;
+
+  if (!noteEnded && elapsed >= noteDuration) {
+    noTone(BUZZER_PIN);
+    noteEnded = true;
+  }
+
+  if (elapsed >= noteDuration + noteGap) {
+    stepActive = false;
+    noteIndex++;
+  }
+}
+
+// ==================================================
+// MOOD TIMER
+// ==================================================
+
+void updateMood(unsigned long now) {
+  if (activeMelody != NO_MELODY) {
+    return;
+  }
+
+  if (now - lastInteractionTime >= LONELY_TIMEOUT) {
+    if (mood != LONELY) {
+      mood = LONELY;
+      Serial.println("[MOOD] Waiting for you...");
+    }
+  } else if (mood == SOUND_HAPPY ||
+             mood == BUTTON_HAPPY) {
+    mood = NORMAL;
+  }
+}
+
+// ==================================================
+// RGB LED
+// LOW = ON
+// ==================================================
+
+void setRGB(bool redOn, bool greenOn, bool blueOn) {
+  digitalWrite(RED_PIN, redOn ? LOW : HIGH);
+  digitalWrite(GREEN_PIN, greenOn ? LOW : HIGH);
+  digitalWrite(BLUE_PIN, blueOn ? LOW : HIGH);
+}
+
+void updateRGB(unsigned long now) {
+  switch (mood) {
+    case NORMAL:
+      setRGB(true, true, false);       // Yellow
+      break;
+
+    case SOUND_HAPPY:
+      setRGB(false, true, false);      // Green
+      break;
+
+    case BUTTON_HAPPY:
+      setRGB(true, false, true);       // Purple
+      break;
+
+    case LONELY:
+      if (now - lastColorChangeTime >= COLOR_INTERVAL) {
+        lastColorChangeTime = now;
+        lonelyColorIndex = (lonelyColorIndex + 1) % 4;
+      }
+
+      switch (lonelyColorIndex) {
+        case 0: setRGB(false, false, true); break; // Blue
+        case 1: setRGB(true, false, true); break;  // Purple
+        case 2: setRGB(false, false, true); break; // Blue
+        case 3: setRGB(true, false, false); break; // Red
+      }
+      break;
+  }
+}
