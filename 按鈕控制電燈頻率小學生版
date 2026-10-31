@@ -1,0 +1,71 @@
+
+const int led1 = 3;
+const int button = 6;
+
+int state = 0;  // 初始狀態
+int lastButton = HIGH;
+
+unsigned long previousMillis = 0;
+unsigned long interval = 500;
+
+bool ledState = HIGH;
+
+void setup() {
+  pinMode(led1, OUTPUT);
+
+  pinMode(button, INPUT_PULLUP);
+
+  // 初始 LED 恆亮
+  digitalWrite(led1, HIGH);
+}
+
+void loop() {
+  int buttonState = digitalRead(button);
+
+  // 偵測按鈕按下
+  if (lastButton == HIGH && buttonState == LOW) {
+    state++;
+
+    if (state >= 4) {
+      state = 0;
+    }
+
+    delay(50); // 簡單防彈跳
+  }
+
+  lastButton = buttonState;
+
+  // 根據狀態設定閃爍頻率
+  switch (state) {
+    case 0:
+      interval = 0;   // 恆亮
+      break;
+
+    case 1:
+      interval = 1000; // 慢閃
+      break;
+
+    case 2:
+      interval = 500;  // 中閃
+      break;
+
+    case 3:
+      interval = 200;  // 快閃
+      break;
+  }
+
+  // LED 控制
+  if (state == 0) {
+    digitalWrite(led1, LOW);
+  } 
+  else {
+    unsigned long currentMillis = millis();
+
+    if (currentMillis - previousMillis >= interval) {
+      previousMillis = currentMillis;
+      ledState = !ledState;
+
+      digitalWrite(led1, ledState);
+    }
+  }
+}
